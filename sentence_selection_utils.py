@@ -250,6 +250,7 @@ def test_prediction(net, device, dataloader, with_labels=True, result_file="resu
 
     w.writelines(str(prob)+'\n' for prob in probs_all)
     w.close()
+    return probs_all
 
 def convert_label_to_int(label):
   if label == 'SUPPORTS':
