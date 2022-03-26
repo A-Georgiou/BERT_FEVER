@@ -104,6 +104,8 @@ def generate_evidence(dataset):
     with open("../wiki_dictionary.pkl", "rb") as f:
         wiki_dict = pickle.load(f)
     
+    
+    sent_selector = SentenceSelector()
     ret_wiki = RetrieveWiki()
     output = []
     
@@ -111,71 +113,56 @@ def generate_evidence(dataset):
     
     for i, sentence in enumerate(documents_top_evidence):
         try:
-            sentence_len = len(wiki_dict[sentence])
-            output.append([[sentence, x] for x in random.sample(range(sentence_len), 5)])
+            sentence_evidence = wiki_dict[sentence]
+            sentence_len = len(sentence_evidence)
+            chosen_sentences = sent_selector.predict_sentences(dataset['claim'][i], sentence_evidence)
+            output.append([[sentence, x] for x in chosen_sentences])
         except:
             output.append([[None, None]]*5)
             print("failed:", sentence)
 
     return output
 
-
-
 from fever.scorer import fever_score
 import sentence_selection_utils
 import torch
 from torch import nn
 
-def predict_sentences(dataset):
-    """
-    SENTENCE SELECTION
-    """
+class SentenceSelector:
+    def __init__(self):
+        self.bert_model = "bert-base-uncased"  # 'albert-base-v2', 'albert-large-v2', 'albert-xlarge-v2', 'albert-xxlarge-v2', 'bert-base-uncased', ...
+        self.maxlen = 128  # maximum length of the tokenized input sentence pair : if greater than "maxlen", the input is truncated and else if smaller, the input is padded
+        self.bs = 16  # batch size
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.sentence_selection_utils.set_seed(42)
+        self.path_to_model = 'models/bert-base-uncased_lr_2e-05_val_loss_0.33999_ep_1.pt'  
+        self.path_to_output_file = 'results/output.txt'
     
-    bert_model = "bert-base-uncased"  # 'albert-base-v2', 'albert-large-v2', 'albert-xlarge-v2', 'albert-xxlarge-v2', 'bert-base-uncased', ...
-    maxlen = 128  # maximum length of the tokenized input sentence pair : if greater than "maxlen", the input is truncated and else if smaller, the input is padded
-    bs = 16  # batch size
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    
-    sentence_selection_utils.set_seed(42)
-    
-    path_to_model = 'models/bert-base-uncased_lr_2e-05_val_loss_0.33999_ep_1.pt'  
-
-    path_to_output_file = 'results/output.txt'
-    
-    test_set = sentence_selection_utils.CustomDataset(dataset, maxlen, bert_model)
-    test_loader = sentence_selection_utils.DataLoader(test_set, batch_size=bs, num_workers=5)
-    
-    model = sentence_selection_utils.SentencePairClassifier(bert_model)
-    if torch.cuda.device_count() > 1:  # if multiple GPUs
-        print("Let's use", torch.cuda.device_count(), "GPUs!")
-        model = nn.DataParallel(model)
-    
-    print()
-    print("Loading the weights of the model...")
-    model.load_state_dict(torch.load(path_to_model))
-    model.to(device)
-    
-    print("Predicting on test data...")
-    sentence_selection_utils.test_prediction(net=model, device=device, dataloader=test_loader, with_labels=True, result_file=path_to_output_file)
-    
-    print("Predictions are available in : {}".format(path_to_output_file))
-
-    path_to_output_file = 'results/output.txt'  # path to the file with prediction probabilities
-    
-    df_test['label_int'] = df_test['label'].map(lambda x: convert_label_to_int(x))
-    labels_test = df_test['label_int']  # true labels
-    
-    probs_test = pd.read_csv(path_to_output_file, header=None)[0]  # prediction probabilities
-    threshold = 0.5   # you can adjust this threshold for your own dataset
-    preds_test=(probs_test>=threshold).astype('uint8') # predicted labels using the above fixed threshold
-    
-    metric = sentence_selection_utils.load_metric("glue", "mrpc")
-    print(labels_test)
-    
-    print(preds_test)
-    
-    # Compute the accuracy and F1 scores
-    print(metric._compute(predictions=preds_test, references=labels_test))
+    def build_data(self, claim, evidence):
+        input_format = [[claim, e] for e in evidence]
+        output_frame = pd.DataFrame(input_format, columns=['claim','evidence'])
+        return output_frame
+        
+    def predict_sentences(self, claim, evidence):
+        dataset = self.build_data(claim, evidence)
+        test_set = sentence_selection_utils.CustomDataset(dataset, self.maxlen, self.bert_model)
+        test_loader = sentence_selection_utils.DataLoader(test_set, batch_size=self.bs, num_workers=5)
+        
+        model = sentence_selection_utils.SentencePairClassifier(self.bert_model)
+        if torch.cuda.device_count() > 1:  # if multiple GPUs
+            print("Let's use", torch.cuda.device_count(), "GPUs!")
+            model = nn.DataParallel(model)
+        
+        print()
+        print("Loading the weights of the model...")
+        self.model.load_state_dict(torch.load(self.path_to_model))
+        self.model.to(self.device)
+        
+        print("Predicting on test data...")
+        probs = sentence_selection_utils.test_prediction(net=self.model, device=self.device, dataloader=test_loader, with_labels=True, result_file=self.path_to_output_file)
+        
+        indeces = np.argpartition(probs, -5)[-5:]
+        return indeces
 
 if __name__ == "__main__":
     df_train = pd.read_json(path_or_buf='./task_train.jsonl', lines=True).drop(['id'], axis=1)
@@ -197,12 +184,12 @@ if __name__ == "__main__":
     
     del BERT_multi
     
-    predict_sentences(df_test)
+    #predict_sentences(df_test)
     
-    #gen_evidence = generate_evidence(df_test)
-    #output_format = build_format(df_test, outs[0], gen_evidence)
+    gen_evidence = generate_evidence(df_test)
+    output_format = build_format(df_test, outs[0], gen_evidence)
     
-    #strict_score, label_accuracy, precision, recall, f1 = fever_score(output_format)    
+    strict_score, label_accuracy, precision, recall, f1 = fever_score(output_format)    
     
     
     
